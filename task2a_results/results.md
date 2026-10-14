@@ -58,3 +58,7 @@
 | IRRIP3 | 6.98728 | 6.17788 | 7.03077 |
 | IRRIP4 | 7.20394 | 6.41930 | 7.17490 |
 | IRRIP5 | 6.98430 | 6.11308 | 6.96124 |
+
+## Choice
+
+IRRIP4 was chosen because of its highest mean speedup and lowest instruction load MPKI.
