@@ -1,24 +1,308 @@
 #include "cache.h"
+#include <algorithm>
+#include <cstdint>
+#include <iostream>
 
+// CS683 PA2 Task 1B first-pass SPP implementation, used by Task 3.
+// - Per-IP last-line tracking.
+// - Constant-stride mode when a stride repeats with confidence.
+// - Signature-based stride history table for repeating non-uniform patterns.
+// - Page-boundary checking.
+// - Accuracy-based degree control using this L1D cache's prefetch statistics.
 
-void CACHE::l1d_prefetcher_initialize() 
+namespace {
+static constexpr uint32_t SPP_IP_TRACKERS = 64;
+static constexpr uint32_t SPP_PATTERN_ENTRIES = 4096;
+static constexpr uint32_t SPP_SIG_MASK = SPP_PATTERN_ENTRIES - 1;
+static constexpr uint32_t SPP_MAX_DEGREE = 3;
+static constexpr uint8_t SPP_MAX_CONFIDENCE = 3;
+
+struct SPPTracker {
+    bool valid = false;
+    bool signature_valid = false;
+    uint64_t ip = 0;
+    uint64_t last_line = 0;
+    int64_t last_stride = 0;
+    uint32_t signature = 0;
+    uint8_t uniform_confidence = 0;
+    uint64_t last_used = 0;
+};
+
+struct SPPPatternEntry {
+    bool valid = false;
+    uint32_t signature_tag = 0;
+    int64_t next_stride = 0;
+    uint8_t confidence = 0;
+};
+
+SPPTracker spp_trackers[SPP_IP_TRACKERS];
+SPPPatternEntry spp_patterns[SPP_PATTERN_ENTRIES];
+uint64_t spp_clock = 0;
+uint64_t spp_demand_accesses = 0;
+uint64_t spp_demand_misses = 0;
+uint64_t spp_pattern_predictions = 0;
+uint64_t spp_uniform_predictions = 0;
+
+static uint32_t signature_index(uint32_t signature)
 {
-    std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
-    std::cout << "------------------------------------------------" << std::endl;
+    return signature & SPP_SIG_MASK;
 }
 
-void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
+// Three-symbol rolling signature over recent strides. Each stride maps to a
+// 4-bit signed/magnitude token; shifting by four means a repeating short
+// stride sequence revisits its signature quickly (rather than after a long
+// arbitrary hash cycle). Large magnitudes are folded, so the pattern table's
+// confidence logic must disambiguate token collisions.
+static uint32_t advance_signature(uint32_t signature, int64_t stride)
 {
-   
+    const uint64_t magnitude = (stride < 0)
+        ? static_cast<uint64_t>(-(stride + 1)) + 1
+        : static_cast<uint64_t>(stride);
+    uint64_t folded = magnitude ^ (magnitude >> 4) ^ (magnitude >> 8) ^ (magnitude >> 12);
+    uint32_t token = static_cast<uint32_t>(folded % 7) + 1; // tokens 1..7
+    if (stride < 0)
+        token |= 0x8;
+    return ((signature << 4) | token) & SPP_SIG_MASK;
 }
 
-void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
+static void train_pattern(uint32_t signature, int64_t observed_stride)
 {
-	return; //metadata_in;
+    SPPPatternEntry &entry = spp_patterns[signature_index(signature)];
+    if (!entry.valid || entry.signature_tag != signature) {
+        entry.valid = true;
+        entry.signature_tag = signature;
+        entry.next_stride = observed_stride;
+        entry.confidence = 1;
+        return;
+    }
+
+    if (entry.next_stride == observed_stride) {
+        if (entry.confidence < SPP_MAX_CONFIDENCE)
+            ++entry.confidence;
+    } else if (entry.confidence > 0) {
+        --entry.confidence;
+        if (entry.confidence == 0) {
+            entry.next_stride = observed_stride;
+            entry.confidence = 1;
+        }
+    }
+}
+
+static bool lookup_pattern(uint32_t signature, int64_t &stride)
+{
+    const SPPPatternEntry &entry = spp_patterns[signature_index(signature)];
+    if (!entry.valid || entry.signature_tag != signature || entry.confidence < 2 || entry.next_stride == 0)
+        return false;
+    stride = entry.next_stride;
+    return true;
+}
+
+static uint32_t active_degree(const CACHE *cache)
+{
+    // pf_useful/pf_issued are ChampSim's built-in L1D prefetch statistics.
+    // Start conservatively until enough prefetches have been attempted.
+    if (cache->pf_issued < 32)
+        return 1;
+    const double accuracy = (cache->pf_issued == 0) ? 0.0 :
+        static_cast<double>(cache->pf_useful) / static_cast<double>(cache->pf_issued);
+    if (accuracy >= 0.50)
+        return 3;
+    if (accuracy >= 0.25)
+        return 2;
+    return 1;
+}
+
+static int find_or_allocate_tracker(uint64_t ip, uint64_t line)
+{
+    for (uint32_t i = 0; i < SPP_IP_TRACKERS; ++i) {
+        if (spp_trackers[i].valid && spp_trackers[i].ip == ip)
+            return static_cast<int>(i);
+    }
+
+    uint32_t victim = 0;
+    for (uint32_t i = 0; i < SPP_IP_TRACKERS; ++i) {
+        if (!spp_trackers[i].valid) {
+            victim = i;
+            break;
+        }
+        if (spp_trackers[i].last_used < spp_trackers[victim].last_used)
+            victim = i;
+    }
+
+    spp_trackers[victim] = SPPTracker{};
+    spp_trackers[victim].valid = true;
+    spp_trackers[victim].ip = ip;
+    spp_trackers[victim].last_line = line;
+    spp_trackers[victim].last_used = ++spp_clock;
+    return -1; // Newly allocated: need another observation to infer a stride.
+}
+
+static bool safe_same_page(uint64_t base_addr, int64_t target_line, uint64_t &target_addr)
+{
+    if (target_line < 0)
+        return false;
+    target_addr = static_cast<uint64_t>(target_line) << LOG2_BLOCK_SIZE;
+    return (target_addr >> LOG2_PAGE_SIZE) == (base_addr >> LOG2_PAGE_SIZE);
+}
+
+static void issue_prefetches(CACHE *cache, uint64_t addr, uint64_t ip,
+                             uint64_t current_line, int64_t stride, uint32_t degree)
+{
+    if (stride == 0)
+        return;
+
+    for (uint32_t distance = 1; distance <= degree; ++distance) {
+        // Use signed arithmetic for negative strides and guard underflow.
+        const __int128 next_line_wide = static_cast<__int128>(current_line) +
+                                        static_cast<__int128>(stride) * distance;
+        if (next_line_wide < 0 || next_line_wide > static_cast<__int128>(UINT64_MAX >> LOG2_BLOCK_SIZE))
+            break;
+        const int64_t next_line = static_cast<int64_t>(next_line_wide);
+        uint64_t pf_addr = 0;
+        if (!safe_same_page(addr, next_line, pf_addr))
+            break;
+
+        // Reduce L1 pollution if the MSHR is already busy, matching the
+        // course's provided IP-stride prefetcher's fill-level behavior.
+        const int fill_level = (cache->MSHR.occupancy < (cache->MSHR.SIZE >> 1)) ? FILL_L1 : FILL_L2;
+        cache->prefetch_line(ip, addr, pf_addr, fill_level, 0);
+    }
+}
+} // namespace
+
+void CACHE::l1d_prefetcher_initialize()
+{
+    for (uint32_t i = 0; i < SPP_IP_TRACKERS; ++i)
+        spp_trackers[i] = SPPTracker{};
+    for (uint32_t i = 0; i < SPP_PATTERN_ENTRIES; ++i)
+        spp_patterns[i] = SPPPatternEntry{};
+    spp_clock = 0;
+    spp_demand_accesses = 0;
+    spp_demand_misses = 0;
+    spp_pattern_predictions = 0;
+    spp_uniform_predictions = 0;
+    std::cout << "Initialize SPP: IP table=" << SPP_IP_TRACKERS
+              << ", signature entries=" << SPP_PATTERN_ENTRIES
+              << ", max degree=" << SPP_MAX_DEGREE << std::endl;
+}
+
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit,
+                                   uint8_t type, uint8_t critical_ip_flag)
+{
+    (void)critical_ip_flag;
+    // Never train on our own prefetch traffic.
+    if (type == PREFETCH)
+        return;
+    if (type != LOAD && type != RFO)
+        return;
+
+    ++spp_demand_accesses;
+    if (!cache_hit)
+        ++spp_demand_misses;
+
+    const uint64_t line = addr >> LOG2_BLOCK_SIZE;
+    const int idx = find_or_allocate_tracker(ip, line);
+    if (idx < 0)
+        return;
+
+    SPPTracker &tracker = spp_trackers[static_cast<uint32_t>(idx)];
+    tracker.last_used = ++spp_clock;
+
+    if (line == tracker.last_line)
+        return;
+
+    int64_t stride = 0;
+    if (line > tracker.last_line) {
+        const uint64_t diff = line - tracker.last_line;
+        if (diff > static_cast<uint64_t>(INT64_MAX)) {
+            tracker.last_line = line;
+            tracker.last_stride = 0;
+            tracker.uniform_confidence = 0;
+            tracker.signature_valid = false;
+            return;
+        }
+        stride = static_cast<int64_t>(diff);
+    } else {
+        const uint64_t diff = tracker.last_line - line;
+        if (diff > static_cast<uint64_t>(INT64_MAX)) {
+            tracker.last_line = line;
+            tracker.last_stride = 0;
+            tracker.uniform_confidence = 0;
+            tracker.signature_valid = false;
+            return;
+        }
+        stride = -static_cast<int64_t>(diff);
+    }
+
+    // Uniform stride confidence and signature-based non-uniform learning run
+    // in parallel. Uniform prediction has priority when confidence is high.
+    if (tracker.last_stride != 0 && stride == tracker.last_stride) {
+        if (tracker.uniform_confidence < SPP_MAX_CONFIDENCE)
+            ++tracker.uniform_confidence;
+    } else {
+        tracker.uniform_confidence = 0;
+    }
+
+    if (tracker.signature_valid)
+        train_pattern(tracker.signature, stride);
+    tracker.signature = advance_signature(tracker.signature, stride);
+    tracker.signature_valid = true;
+    tracker.last_line = line;
+    tracker.last_stride = stride;
+
+    const uint32_t degree = active_degree(this);
+    if (tracker.uniform_confidence >= 2) {
+        ++spp_uniform_predictions;
+        issue_prefetches(this, addr, ip, line, stride, degree);
+        return;
+    }
+
+    // Walk the learned signature table to predict a non-uniform sequence.
+    uint32_t signature = tracker.signature;
+    int64_t predicted_line = static_cast<int64_t>(line);
+    for (uint32_t depth = 0; depth < degree; ++depth) {
+        int64_t predicted_stride = 0;
+        if (!lookup_pattern(signature, predicted_stride))
+            break;
+
+        const __int128 next_line_wide = static_cast<__int128>(predicted_line) + predicted_stride;
+        if (next_line_wide < 0 || next_line_wide > static_cast<__int128>(UINT64_MAX >> LOG2_BLOCK_SIZE))
+            break;
+        predicted_line = static_cast<int64_t>(next_line_wide);
+        uint64_t pf_addr = 0;
+        if (!safe_same_page(addr, predicted_line, pf_addr))
+            break;
+
+        const int fill_level = (MSHR.occupancy < (MSHR.SIZE >> 1)) ? FILL_L1 : FILL_L2;
+        prefetch_line(ip, addr, pf_addr, fill_level, 0);
+        ++spp_pattern_predictions;
+        signature = advance_signature(signature, predicted_stride);
+    }
+}
+
+void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set,
+                                      uint32_t way, uint8_t prefetch,
+                                      uint64_t v_evicted_addr, uint64_t evicted_addr,
+                                      uint32_t metadata_in)
+{
+    (void)v_addr;
+    (void)addr;
+    (void)set;
+    (void)way;
+    (void)prefetch;
+    (void)v_evicted_addr;
+    (void)evicted_addr;
+    (void)metadata_in;
 }
 
 void CACHE::l1d_prefetcher_final_stats()
 {
-
+    const double accuracy = (pf_issued == 0) ? 0.0 :
+        static_cast<double>(pf_useful) / static_cast<double>(pf_issued);
+    std::cout << "SPP demand accesses observed: " << spp_demand_accesses << std::endl;
+    std::cout << "SPP demand misses observed: " << spp_demand_misses << std::endl;
+    std::cout << "SPP uniform predictions issued at confidence: " << spp_uniform_predictions << std::endl;
+    std::cout << "SPP signature predictions issued: " << spp_pattern_predictions << std::endl;
+    std::cout << "SPP current dynamic degree: " << active_degree(this) << std::endl;
+    std::cout << "SPP built-in L1D prefetch accuracy (useful/issued): " << accuracy << std::endl;
 }
