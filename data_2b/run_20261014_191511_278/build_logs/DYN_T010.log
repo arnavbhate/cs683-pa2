@@ -1,0 +1,22 @@
+Building single-core ChampSim...
+
+rm -f -r obj
+Generating dependencies for src/ooo_cpu.cc...
+Compiling src/ooo_cpu.cc...
+src/ooo_cpu.cc:508:25: warning: "/*" within comment [-Wcomment]
+                         /*
+                          
+src/ooo_cpu.cc:895:40: warning: "/*" within comment [-Wcomment]
+  ////DP ( if (warmup_complete[cpu]) { //*******************************************************************************************
+                                         
+src/ooo_cpu.cc:927:9: warning: "/*" within comment [-Wcomment]
+         /*fetch_packet.address = ROB.entry[fetch_index].instruction_pa >> 6;
+          
+src/ooo_cpu.cc:949:13: warning: "/*" within comment [-Wcomment]
+             /*
+              
+src/ooo_cpu.cc: In member function 'void O3_CPU::complete_instr_fetch(PACKET_QUEUE*, uint8_t)':
+src/ooo_cpu.cc:2344:19: warning: comparison between signed and unsigned integer expressions [-Wsign-compare]
+     if (rob_index != (a = check_rob(queue->entry[index].instr_id)))
+         ~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+make: *** [Makefile:52: obj/src/ooo_cpu.o] Interrupt

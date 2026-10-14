@@ -1,0 +1,10 @@
+config	threshold	warmup_instructions	simulation_instructions	prefetcher	replacement	binary	trace	exit_code	elapsed_seconds	log_file
+LRU	NA	25000000	25000000	no	lru	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-lru-lru-lru-lru-lru-1core-t2b_lru	Trace1-001	134	0	data_2b/run_20261014_191511_278/logs/LRU__Trace1-001.log
+LRU	NA	25000000	25000000	no	lru	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-lru-lru-lru-lru-lru-1core-t2b_lru	Trace2-002	134	0	data_2b/run_20261014_191511_278/logs/LRU__Trace2-002.log
+LRU	NA	25000000	25000000	no	lru	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-lru-lru-lru-lru-lru-1core-t2b_lru	Trace3-003	134	0	data_2b/run_20261014_191511_278/logs/LRU__Trace3-003.log
+RRIP	NA	25000000	25000000	no	rrip	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-rrip-lru-lru-lru-lru-1core-t2b_rrip	Trace1-001	134	0	data_2b/run_20261014_191511_278/logs/RRIP__Trace1-001.log
+RRIP	NA	25000000	25000000	no	rrip	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-rrip-lru-lru-lru-lru-1core-t2b_rrip	Trace2-002	134	0	data_2b/run_20261014_191511_278/logs/RRIP__Trace2-002.log
+RRIP	NA	25000000	25000000	no	rrip	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-rrip-lru-lru-lru-lru-1core-t2b_rrip	Trace3-003	134	0	data_2b/run_20261014_191511_278/logs/RRIP__Trace3-003.log
+IRRIP4	NA	25000000	25000000	no	irrip4	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-irrip4-lru-lru-lru-lru-1core-t2b_irrip4	Trace1-001	134	0	data_2b/run_20261014_191511_278/logs/IRRIP4__Trace1-001.log
+IRRIP4	NA	25000000	25000000	no	irrip4	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-irrip4-lru-lru-lru-lru-1core-t2b_irrip4	Trace2-002	134	0	data_2b/run_20261014_191511_278/logs/IRRIP4__Trace2-002.log
+IRRIP4	NA	25000000	25000000	no	irrip4	hashed_perceptron-no-no-no-no-no-no-no-lru-lru-lru-irrip4-lru-lru-lru-lru-1core-t2b_irrip4	Trace3-003	134	0	data_2b/run_20261014_191511_278/logs/IRRIP4__Trace3-003.log
