@@ -1,12 +1,12 @@
 #include "cache.h"
 
-#define maxRRPV 3
+#define maxRRPV 7
 uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 
 // initialize replacement state
 void CACHE::l2c_initialize_replacement()
 {
-    cout << "Initialize SRRIP state for L2C" << endl;
+    cout << "Initialize IRRIP state for L2C" << endl;
 
     for (int i=0; i<L2C_SET; i++) {
         for (int j=0; j<L2C_WAY; j++) {
@@ -68,9 +68,9 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
 
     if (hit)
-        l2_rrpv[set][way] = 0;
+        l2_rrpv[set][way] = (isInstruction) ? 0 : 1; //prioritise instructions more
     else
-        l2_rrpv[set][way] = maxRRPV-1;  //insert with RRPV2
+        l2_rrpv[set][way] = (isInstruction) ? (maxRRPV-2) : (maxRRPV-1);  //insert with RRPV = 5 for instructions and 6 for data
 }
 
 // use this function to print out your own stats at the end of simulation
