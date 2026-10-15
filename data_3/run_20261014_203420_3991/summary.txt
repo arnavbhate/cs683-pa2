@@ -1,0 +1,37 @@
+CS683 PA2 Task 3 — Simulation Summary
+==================================================================
+warmup_instructions=25000000; simulation_instructions=25000000.
+All reported metrics are parsed from the final Region of Interest output. Missing values remain blank/NA; they are not coerced to zero.
+Speedup vs LRU uses the no-prefetch LRU result for the same trace. Task 3 matching-policy coverage uses L1D load misses with matching no-prefetch replacement baseline.
+
+Per-configuration summary
+Config	Successful traces	Mean IPC	GM speedup vs LRU-no-prefetch	GM speedup vs matching no-prefetch policy	Mean L1D Load MPKI	Mean prefetch accuracy %	Mean L1D coverage %	Mean L2C Load MPKI	Mean L2 Instruction Load MPKI	Mean L2 Data Load MPKI
+BASE_LRU	3	0.288057	1.000000	NA	9.205047	NA	NA	16.816800	10.591140	6.225667
+BASE_RRIP	3	0.288185	1.000636	NA	9.205053	NA	NA	16.248300	10.300640	5.947680
+BASE_DYN_IRRIP	3	0.289940	1.007574	NA	9.207067	NA	NA	14.801787	8.278793	6.523000
+SPP_LRU	3	0.289514	1.004741	1.004741	8.792580	40.715691	5.384897	16.445760	10.643833	5.801920
+SPP_RRIP	3	0.289629	1.005308	1.004669	8.791527	40.871472	5.394613	15.878680	10.341920	5.536747
+SPP_DYN_IRRIP	3	0.291466	1.012610	1.004999	8.794433	40.672142	5.381096	14.352587	8.254120	6.098453
+
+Comparison check for Trace1-001:
+  SPP + Dynamic I-RRIP IPC: 0.233671
+  Dynamic I-RRIP alone IPC: 0.232263
+  SPP + RRIP IPC: 0.233332
+  SPP + LRU IPC: 0.233501
+  Task 3 IPC objective met vs Dynamic I-RRIP, SPP+RRIP, and SPP+LRU: YES
+
+Comparison check for Trace2-002:
+  SPP + Dynamic I-RRIP IPC: 0.256249
+  Dynamic I-RRIP alone IPC: 0.255756
+  SPP + RRIP IPC: 0.251172
+  SPP + LRU IPC: 0.250395
+  Task 3 IPC objective met vs Dynamic I-RRIP, SPP+RRIP, and SPP+LRU: YES
+
+Comparison check for Trace3-003:
+  SPP + Dynamic I-RRIP IPC: 0.384479
+  Dynamic I-RRIP alone IPC: 0.381801
+  SPP + RRIP IPC: 0.384383
+  SPP + LRU IPC: 0.384645
+  Task 3 IPC objective met vs Dynamic I-RRIP, SPP+RRIP, and SPP+LRU: NO / INCOMPLETE
+
+Failed or incomplete runs: 0

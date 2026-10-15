@@ -1,0 +1,13 @@
+run_id=20261014_203420_3991
+started_at=2026-10-14T20:34:20+00:00
+repository=/workspace/cs683-pa2
+trace_directory=/workspace/traces
+warmup_instructions=25000000
+simulation_instructions=25000000
+traces_found=3
+trace=/workspace/traces/Trace1-001
+trace=/workspace/traces/Trace2-002
+trace=/workspace/traces/Trace3-003
+trace_alias_1=/workspace/traces/Trace1-001 -> /tmp/cs683_pa2_trace_aliases_20261014_203420_3991/Trace_1.champsimtrace.gz
+trace_alias_2=/workspace/traces/Trace2-002 -> /tmp/cs683_pa2_trace_aliases_20261014_203420_3991/Trace_2.champsimtrace.gz
+trace_alias_3=/workspace/traces/Trace3-003 -> /tmp/cs683_pa2_trace_aliases_20261014_203420_3991/Trace_3.champsimtrace.gz

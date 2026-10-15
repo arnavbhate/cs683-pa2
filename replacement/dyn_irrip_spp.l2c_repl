@@ -2,32 +2,22 @@
 #include <algorithm>
 #include <cstdint>
 
-// CS683 PA2 Task 3: SPP-aware Dynamic I-RRIP.
-// This preserves Task 2B set-dueling and adds prefetch-aware insertion and
-// replacement for L2 lines requested with type PREFETCH.
 #ifndef DYN_IRRIP_THRESHOLD
 #define DYN_IRRIP_THRESHOLD 0.25
 #endif
 
-// Use the same RRPV range as the chosen Task 2A IRRIP4 implementation.
 static constexpr uint32_t DYN_MAX_RRPV = 7;
 
-// Set dueling: every 32nd set is a leader set. This allocates 1/32 of sets to
-// each policy (1/16 in total); all other sets are followers.
 static constexpr uint32_t DYN_LEADER_MOD = 32;
 static constexpr uint32_t DYN_RRIP_LEADER_REMAINDER = 0;
 static constexpr uint32_t DYN_IRRIP_LEADER_REMAINDER = 1;
 
 uint32_t dyn_l2_rrpv[L2C_SET][L2C_WAY];
-// True when a line was brought into L2 by a prefetch and has not yet been
-// consumed by a demand access. These lines are lower priority for retention.
 uint8_t dyn_l2_unused_prefetch[L2C_SET][L2C_WAY];
 uint64_t dyn_l2_prefetch_fills = 0;
 uint64_t dyn_l2_prefetch_demand_hits = 0;
 uint64_t dyn_l2_prefetch_unused_evictions = 0;
 
-// Count only demand data/instruction requests. Ignore prefetches, writebacks,
-// and translation traffic so they do not distort the access-pressure metric.
 uint64_t dyn_rrip_instruction_accesses = 0;
 uint64_t dyn_rrip_data_accesses = 0;
 uint64_t dyn_rrip_instruction_misses = 0;
@@ -48,9 +38,6 @@ static inline bool dyn_is_irrip_leader(uint32_t set)
     return (set % DYN_LEADER_MOD) == DYN_IRRIP_LEADER_REMAINDER;
 }
 
-// Assignment hint:
-// (instruction accesses + instruction misses) /
-// (total accesses + total misses).
 static inline double dyn_instruction_pressure()
 {
     const uint64_t total_accesses = dyn_rrip_instruction_accesses + dyn_rrip_data_accesses;
@@ -63,7 +50,6 @@ static inline double dyn_instruction_pressure()
     return static_cast<double>(numerator) / static_cast<double>(denominator);
 }
 
-// Leader sets never switch. Follower sets use the global decision statistic.
 static inline bool dyn_use_irrip(uint32_t set)
 {
     if (dyn_is_rrip_leader(set))
@@ -102,9 +88,7 @@ uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
 {
     const bool instruction_mode = dyn_use_irrip(set);
 
-    while (true) {
-        // A prefetched line not yet used by demand gets first eviction
-        // priority, but only among lines already at maximum RRPV.
+    while(true){
         bool max_rrpv_exists = false;
         for (uint32_t way = 0; way < L2C_WAY; ++way)
             if (dyn_l2_rrpv[set][way] >= DYN_MAX_RRPV)
@@ -119,10 +103,8 @@ uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
                 }
             }
 
-            // If no unused prefetched line is ready, I-RRIP breaks RRPV ties
-            // in favour of evicting data rather than instruction lines.
-            for (uint32_t way = 0; way < L2C_WAY; ++way) {
-                if (dyn_l2_rrpv[set][way] >= DYN_MAX_RRPV) {
+            for(uint32_t way = 0; way < L2C_WAY; ++way){
+                if(dyn_l2_rrpv[set][way] >= DYN_MAX_RRPV){
                     if (instruction_mode) {
                         for (uint32_t candidate = 0; candidate < L2C_WAY; ++candidate) {
                             if (dyn_l2_rrpv[set][candidate] >= DYN_MAX_RRPV &&
@@ -135,8 +117,7 @@ uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
             }
         }
 
-        // Age all lines, saturating at max RRPV.
-        for (uint32_t way = 0; way < L2C_WAY; ++way) {
+        for(uint32_t way = 0; way < L2C_WAY; ++way){
             if (dyn_l2_rrpv[set][way] < DYN_MAX_RRPV)
                 ++dyn_l2_rrpv[set][way];
         }
@@ -148,21 +129,17 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
                                          uint64_t victim_addr, uint32_t type,
                                          uint8_t hit, uint8_t isInstruction)
 {
-    // Track prefetched lines that are subsequently consumed by demand.
-    if (hit && dyn_l2_unused_prefetch[set][way] && dyn_is_demand(type)) {
+    if(hit && dyn_l2_unused_prefetch[set][way] && dyn_is_demand(type)){
         ++dyn_l2_prefetch_demand_hits;
         dyn_l2_unused_prefetch[set][way] = 0;
     }
-
-    // The assignment asks for instruction/non-instruction accesses and misses
-    // on leader sets. RRIP leader sets are the fixed control group used to
-    // estimate the instruction-pressure ratio from the assignment hint.
     if (dyn_is_rrip_leader(set) && dyn_is_demand(type)) {
-        if (isInstruction) {
+        if(isInstruction){
             ++dyn_rrip_instruction_accesses;
             if (!hit)
                 ++dyn_rrip_instruction_misses;
-        } else {
+        }
+        else{
             ++dyn_rrip_data_accesses;
             if (!hit)
                 ++dyn_rrip_data_misses;
@@ -170,21 +147,18 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     }
 
     if (hit) {
-        // A PREFETCH hit is not evidence that demand has used the line; the
-        // marker is cleared above only on a demand LOAD/RFO hit.
         if (dyn_use_irrip(set))
             dyn_l2_rrpv[set][way] = isInstruction ? 0 : 2;
         else
             dyn_l2_rrpv[set][way] = 0;
-    } else {
+    }
+    else{
         if (type == PREFETCH) {
-            // Insert prefetched data at maximum RRPV so unused prefetches are
-            // naturally the first candidates for eviction.
             dyn_l2_rrpv[set][way] = DYN_MAX_RRPV;
             dyn_l2_unused_prefetch[set][way] = 1;
             ++dyn_l2_prefetch_fills;
-        } else {
-            // This way now contains a demand-filled line, not an unused PF.
+        } 
+        else{
             dyn_l2_unused_prefetch[set][way] = 0;
             if (dyn_use_irrip(set))
                 dyn_l2_rrpv[set][way] = isInstruction ? (DYN_MAX_RRPV - 3) : (DYN_MAX_RRPV - 1);
