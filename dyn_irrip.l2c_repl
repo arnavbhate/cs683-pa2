@@ -1,0 +1,199 @@
+#include "cache.h"
+#include <cstdint>
+
+// CS683 PA2 Task 2B: Dynamic I-RRIP.
+// A fixed set-dueling control group uses RRIP. The instruction-pressure metric
+// measured on these control sets selects RRIP or I-RRIP for follower sets.
+#ifndef DYN_IRRIP_THRESHOLD
+#define DYN_IRRIP_THRESHOLD 0.25
+#endif
+
+// Use a unified 3-bit RRPV range so follower sets can switch modes without
+// reinterpreting their resident lines' RRPVs. This matches the chosen IRRIP4
+// implementation's MAX_RRPV=7.
+static constexpr uint32_t DYN_MAX_RRPV = 7;
+static constexpr uint32_t DYN_LEADER_MOD = 32;
+static constexpr uint32_t DYN_RRIP_LEADER_REMAINDER = 0;
+static constexpr uint32_t DYN_IRRIP_LEADER_REMAINDER = 1;
+
+uint32_t dyn_l2_rrpv[L2C_SET][L2C_WAY];
+
+// RRIP leader-set counters used by the assignment's decision metric.
+uint64_t dyn_rrip_instruction_accesses = 0;
+uint64_t dyn_rrip_data_accesses = 0;
+uint64_t dyn_rrip_instruction_misses = 0;
+uint64_t dyn_rrip_data_misses = 0;
+
+// Additional diagnostic counters: show how follower sets actually used modes.
+uint64_t dyn_follower_rrip_accesses = 0;
+uint64_t dyn_follower_rrip_misses = 0;
+uint64_t dyn_follower_irrip_accesses = 0;
+uint64_t dyn_follower_irrip_misses = 0;
+
+// Secondary leader counters are for reporting/diagnosis only. The assignment's
+// example pressure statistic below is measured on the fixed RRIP control group.
+uint64_t dyn_irrip_instruction_accesses = 0;
+uint64_t dyn_irrip_data_accesses = 0;
+uint64_t dyn_irrip_instruction_misses = 0;
+uint64_t dyn_irrip_data_misses = 0;
+
+static inline bool dyn_is_demand(uint32_t type)
+{
+    return type == LOAD || type == RFO;
+}
+
+static inline bool dyn_is_rrip_leader(uint32_t set)
+{
+    return (set % DYN_LEADER_MOD) == DYN_RRIP_LEADER_REMAINDER;
+}
+
+static inline bool dyn_is_irrip_leader(uint32_t set)
+{
+    return (set % DYN_LEADER_MOD) == DYN_IRRIP_LEADER_REMAINDER;
+}
+
+// Formula suggested by the assignment:
+// (instruction accesses + instruction misses) /
+// (total accesses + total misses).
+static inline double dyn_instruction_pressure()
+{
+    const uint64_t total_accesses = dyn_rrip_instruction_accesses + dyn_rrip_data_accesses;
+    const uint64_t total_misses = dyn_rrip_instruction_misses + dyn_rrip_data_misses;
+    const uint64_t denominator = total_accesses + total_misses;
+    if (denominator == 0)
+        return 0.0;
+
+    const uint64_t numerator = dyn_rrip_instruction_accesses + dyn_rrip_instruction_misses;
+    return static_cast<double>(numerator) / static_cast<double>(denominator);
+}
+
+// Leader sets are fixed; only follower sets use the decision threshold.
+static inline bool dyn_use_irrip(uint32_t set)
+{
+    if (dyn_is_rrip_leader(set))
+        return false;
+    if (dyn_is_irrip_leader(set))
+        return true;
+    return dyn_instruction_pressure() > DYN_IRRIP_THRESHOLD;
+}
+
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize Dynamic I-RRIP state for L2C" << endl;
+    cout << "Dynamic I-RRIP threshold: " << DYN_IRRIP_THRESHOLD << endl;
+    cout << "Set dueling: RRIP leaders=set%" << DYN_LEADER_MOD << "=="
+         << DYN_RRIP_LEADER_REMAINDER << ", I-RRIP leaders=set%" << DYN_LEADER_MOD
+         << "==" << DYN_IRRIP_LEADER_REMAINDER << endl;
+    cout << "RRIP leader sets: " << ((L2C_SET + DYN_LEADER_MOD - 1) / DYN_LEADER_MOD)
+         << "; I-RRIP leader sets: " << (L2C_SET / DYN_LEADER_MOD) << endl;
+
+    for (uint32_t set = 0; set < L2C_SET; ++set)
+        for (uint32_t way = 0; way < L2C_WAY; ++way)
+            dyn_l2_rrpv[set][way] = DYN_MAX_RRPV;
+
+    dyn_rrip_instruction_accesses = dyn_rrip_data_accesses = 0;
+    dyn_rrip_instruction_misses = dyn_rrip_data_misses = 0;
+    dyn_follower_rrip_accesses = dyn_follower_rrip_misses = 0;
+    dyn_follower_irrip_accesses = dyn_follower_irrip_misses = 0;
+    dyn_irrip_instruction_accesses = dyn_irrip_data_accesses = 0;
+    dyn_irrip_instruction_misses = dyn_irrip_data_misses = 0;
+}
+
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
+                                const BLOCK *current_set, uint64_t ip,
+                                uint64_t full_addr, uint32_t type)
+{
+    (void)cpu; (void)instr_id; (void)ip; (void)full_addr; (void)type;
+    const bool instruction_mode = dyn_use_irrip(set);
+
+    while (true) {
+        for (uint32_t way = 0; way < L2C_WAY; ++way) {
+            if (dyn_l2_rrpv[set][way] >= DYN_MAX_RRPV) {
+                if (instruction_mode) {
+                    // Among equally old lines, evict data before instructions.
+                    for (uint32_t candidate = 0; candidate < L2C_WAY; ++candidate) {
+                        if (dyn_l2_rrpv[set][candidate] >= DYN_MAX_RRPV &&
+                            !current_set[candidate].instruction)
+                            return candidate;
+                    }
+                }
+                return way;
+            }
+        }
+
+        // Age RRPVs with saturation to avoid unsigned overflow.
+        for (uint32_t way = 0; way < L2C_WAY; ++way)
+            if (dyn_l2_rrpv[set][way] < DYN_MAX_RRPV)
+                ++dyn_l2_rrpv[set][way];
+    }
+}
+
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way,
+                                         uint64_t full_addr, uint64_t ip,
+                                         uint64_t victim_addr, uint32_t type,
+                                         uint8_t hit, uint8_t isInstruction)
+{
+    (void)cpu; (void)full_addr; (void)ip; (void)victim_addr;
+    const bool instruction_mode = dyn_use_irrip(set);
+
+    // Count demand accesses and misses on the fixed RRIP leader sets to drive
+    // the decision formula. Count both instruction and non-instruction demand.
+    if (dyn_is_demand(type)) {
+        if (dyn_is_rrip_leader(set)) {
+            if (isInstruction) {
+                ++dyn_rrip_instruction_accesses;
+                if (!hit) ++dyn_rrip_instruction_misses;
+            } else {
+                ++dyn_rrip_data_accesses;
+                if (!hit) ++dyn_rrip_data_misses;
+            }
+        } else if (dyn_is_irrip_leader(set)) {
+            if (isInstruction) {
+                ++dyn_irrip_instruction_accesses;
+                if (!hit) ++dyn_irrip_instruction_misses;
+            } else {
+                ++dyn_irrip_data_accesses;
+                if (!hit) ++dyn_irrip_data_misses;
+            }
+        } else if (instruction_mode) {
+            ++dyn_follower_irrip_accesses;
+            if (!hit) ++dyn_follower_irrip_misses;
+        } else {
+            ++dyn_follower_rrip_accesses;
+            if (!hit) ++dyn_follower_rrip_misses;
+        }
+    }
+
+    if (hit) {
+        dyn_l2_rrpv[set][way] = instruction_mode ? (isInstruction ? 0 : 2) : 0;
+    } else {
+        dyn_l2_rrpv[set][way] = instruction_mode
+            ? (isInstruction ? DYN_MAX_RRPV - 3 : DYN_MAX_RRPV - 1)
+            : DYN_MAX_RRPV - 1;
+    }
+}
+
+void CACHE::l2c_replacement_final_stats()
+{
+    const uint64_t ctrl_accesses = dyn_rrip_instruction_accesses + dyn_rrip_data_accesses;
+    const uint64_t ctrl_misses = dyn_rrip_instruction_misses + dyn_rrip_data_misses;
+    const double pressure = dyn_instruction_pressure();
+
+    cout << "Dynamic I-RRIP threshold: " << DYN_IRRIP_THRESHOLD << endl;
+    cout << "RRIP leader instruction accesses: " << dyn_rrip_instruction_accesses << endl;
+    cout << "RRIP leader data accesses: " << dyn_rrip_data_accesses << endl;
+    cout << "RRIP leader instruction misses: " << dyn_rrip_instruction_misses << endl;
+    cout << "RRIP leader data misses: " << dyn_rrip_data_misses << endl;
+    cout << "RRIP leader total accesses: " << ctrl_accesses << endl;
+    cout << "RRIP leader total misses: " << ctrl_misses << endl;
+    cout << "I-RRIP leader instruction accesses: " << dyn_irrip_instruction_accesses << endl;
+    cout << "I-RRIP leader data accesses: " << dyn_irrip_data_accesses << endl;
+    cout << "I-RRIP leader instruction misses: " << dyn_irrip_instruction_misses << endl;
+    cout << "I-RRIP leader data misses: " << dyn_irrip_data_misses << endl;
+    cout << "Follower RRIP demand accesses: " << dyn_follower_rrip_accesses << endl;
+    cout << "Follower RRIP demand misses: " << dyn_follower_rrip_misses << endl;
+    cout << "Follower I-RRIP demand accesses: " << dyn_follower_irrip_accesses << endl;
+    cout << "Follower I-RRIP demand misses: " << dyn_follower_irrip_misses << endl;
+    cout << "Final instruction pressure: " << pressure << endl;
+    cout << "Follower policy at end: " << ((pressure > DYN_IRRIP_THRESHOLD) ? "I-RRIP" : "RRIP") << endl;
+}
